@@ -1,0 +1,1 @@
+UBOOT_IMGADDR=0x40008000 # Added by odroid-u3-uboot
