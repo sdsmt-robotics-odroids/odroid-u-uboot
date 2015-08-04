@@ -2,7 +2,7 @@
 
 Name:           odroid-u-uboot
 Version:        2014.08.29
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        U-boot for ODROID-U2/U3/X2
 
 Group:          System Environment/Base
@@ -31,8 +31,8 @@ default boot.ini, and also configures grubby.
 %setup -qn u-boot-%{commit}
 %patch0 -p1
 rm -f mkbl2
-#dos2unix COPYING.txt
-#chmod 644 COPYING.txt
+dos2unix COPYING.txt
+chmod 644 COPYING.txt
 
 %build
 make %{?_smp_mflags} smdk4412_config
@@ -41,7 +41,7 @@ make %{?_smp_mflags} CROSS_COMPILE=arm-none-eabi-
 %install
 install -p -m0644 -D %{SOURCE2} %{buildroot}%{_datadir}/%{name}/grubby-%{version}-%{release}
 install -p -m0644 -D %{SOURCE1} %{buildroot}/boot/uboot/boot.ini
-install -p -m0755 -D u-boot.bin %{buildroot}/boot/uboot/u-boot.bin
+install -p -m0755 -D sd_fuse/u-boot.bin.HardKernel %{buildroot}/boot/uboot/u-boot.bin
 
 ln -s grubby-%{version}-%{release} %{buildroot}%{_datadir}/%{name}/grubby
 
@@ -61,5 +61,8 @@ done < %{_datadir}/%{name}/grubby-%{version}-%{release}
 /boot/uboot/u-boot.bin
 
 %changelog
+* Mon Aug 03 2015 Scott K Logan <logans@cottsay.net> - 2014.08.29-2
+- Temporarily switch to the prebuilt u-boot.bin (see https://github.com/hardkernel/u-boot/issues/16)
+
 * Sun Jul 19 2015 Scott K Logan <logans@cottsay.net> - 2014.08.29-1
 - Initial package
