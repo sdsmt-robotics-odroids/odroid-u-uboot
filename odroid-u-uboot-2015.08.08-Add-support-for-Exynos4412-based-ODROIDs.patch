@@ -1,0 +1,1206 @@
+From 3733dbc6e7fa0907e93b4a62ce1221bedfd368b8 Mon Sep 17 00:00:00 2001
+From: Scott K Logan <logans@cottsay.net>
+Date: Sat, 8 Aug 2015 03:39:02 -0700
+Subject: [PATCH] Add support for Exynos4412-based ODROIDs
+
+---
+ .gitignore                                       |   2 +
+ arch/arm/cpu/armv7/exynos/soc.c                  |  16 ++
+ arch/arm/cpu/armv7/s5p-common/pwm.c              |   2 +-
+ arch/arm/include/asm/arch-exynos/pmic_hkdk4212.h |  60 +++++
+ arch/arm/include/asm/mach-types.h                |   1 +
+ board/samsung/smdk4x12/Makefile                  |   4 +
+ board/samsung/smdk4x12/pmic_hkdk4212.c           | 286 +++++++++++++++++++++++
+ board/samsung/smdk4x12/smc.c                     |   6 +
+ board/samsung/smdk4x12/smdk4x12.c                |  88 +++++++
+ common/cmd_fastboot.c                            |   4 +-
+ common/cmd_fat.c                                 |  14 ++
+ common/env_common.c                              |   8 +
+ drivers/usb/gadget/Makefile                      |   9 +-
+ drivers/usb/gadget/config.c                      |   1 -
+ drivers/usb/gadget/epautoconf.c                  |   1 -
+ drivers/usb/gadget/ether.c                       |   1 -
+ drivers/usb/gadget/s3c_udc_otg.c                 |   1 -
+ drivers/usb/gadget/usbstring.c                   |   1 -
+ drivers/usb/host/ehci-exynos.c                   |  33 ++-
+ include/configs/smdk4412.h                       | 168 +++++++++----
+ include/usb/s3c_udc.h                            |   1 -
+ 21 files changed, 655 insertions(+), 52 deletions(-)
+ create mode 100644 arch/arm/include/asm/arch-exynos/pmic_hkdk4212.h
+ create mode 100644 board/samsung/smdk4x12/pmic_hkdk4212.c
+
+diff --git a/.gitignore b/.gitignore
+index 0f32fd8..81b6d2f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -75,3 +75,5 @@ cscope.*
+ /onenand_ipl/onenand-ipl*
+ /onenand_ipl/board/*/onenand*
+ /onenand_ipl/board/*/*.S
++
++/tools/mksmdk*spl
+diff --git a/arch/arm/cpu/armv7/exynos/soc.c b/arch/arm/cpu/armv7/exynos/soc.c
+index dcfcec2..22e5cb6 100644
+--- a/arch/arm/cpu/armv7/exynos/soc.c
++++ b/arch/arm/cpu/armv7/exynos/soc.c
+@@ -24,7 +24,23 @@
+ #include <common.h>
+ #include <asm/io.h>
+ 
++#if defined(CONFIG_BOARD_HARDKERNEL) && defined(CONFIG_EXYNOS4412)
++#include <asm/arch/gpio.h>
++#include <asm/arch/pmic_hkdk4212.h>
++#endif
++
+ void reset_cpu(ulong addr)
+ {
++#if defined(CONFIG_BOARD_HARDKERNEL) && defined(CONFIG_EXYNOS4412)
++	struct exynos4_gpio_part2 *gpio2 = (struct exynos4_gpio_part2 *) EXYNOS4_GPIO_PART2_BASE;
++
++	emmc_pwr_reset();
++
++	s5p_gpio_cfg_pin(&gpio2->k1, 2, GPIO_OUTPUT);
++	s5p_gpio_set_value(&gpio2->k1, 2, 0);
++	udelay (50000);				/* wait 50 ms */
++	s5p_gpio_set_value(&gpio2->k1, 2, 1);
++#endif
++
+ 	writel(0x1, samsung_get_base_swreset());
+ }
+diff --git a/arch/arm/cpu/armv7/s5p-common/pwm.c b/arch/arm/cpu/armv7/s5p-common/pwm.c
+index ed6e4fd..f8a4ffb 100644
+--- a/arch/arm/cpu/armv7/s5p-common/pwm.c
++++ b/arch/arm/cpu/armv7/s5p-common/pwm.c
+@@ -167,7 +167,7 @@ int pwm_init(int pwm_id, int div, int invert)
+ 	val |= (div & 0xf) << MUX_DIV_SHIFT(pwm_id);
+ 	writel(val, &pwm->tcfg1);
+ 
+-#ifdef CONFIG_CPU_EXYNOS5410
++#if defined(CONFIG_CPU_EXYNOS5410) || defined(CONFIG_EXYNOS4412)
+ 	timer_rate_hz = 2500000;
+ #else
+ 	timer_rate_hz = get_pwm_clk() / ((prescaler + 1) *
+diff --git a/arch/arm/include/asm/arch-exynos/pmic_hkdk4212.h b/arch/arm/include/asm/arch-exynos/pmic_hkdk4212.h
+new file mode 100644
+index 0000000..aa88e42
+--- /dev/null
++++ b/arch/arm/include/asm/arch-exynos/pmic_hkdk4212.h
+@@ -0,0 +1,60 @@
++/*
++ * (C) Copyright 2011 Samsung Electronics Co. Ltd
++ *
++ * See file CREDITS for list of people who contributed to this
++ * project.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++
++#ifndef __PMIC_H__
++#define __PMIC_H__
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#define MAX77687_ADDR			(0x09 << 1)
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#define GPD1CON					(*(volatile unsigned long *)(0x114000C0))
++#define GPD1DAT					(*(volatile unsigned long *)(0x114000C4))
++#define GPD1PUD					(*(volatile unsigned long *)(0x114000C8))
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#define	GPIO_I2C_SDA_CON_PORT	GPD1CON
++#define	GPIO_I2C_SDA_DAT_PORT	GPD1DAT
++#define	GPIO_SDA_PIN			0
++
++#define	GPIO_I2C_CLK_CON_PORT	GPD1CON
++#define	GPIO_I2C_CLK_DAT_PORT	GPD1DAT
++#define	GPIO_CLK_PIN			1
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#define	DELAY_TIME				100	// us value
++#define	PORT_CHANGE_DELAY_TIME	100
++
++#define	GPIO_CON_PORT_MASK		0xF
++#define	GPIO_CON_PORT_OFFSET	0x4
++
++#define	GPIO_CON_INPUT			0x0
++#define	GPIO_CON_OUTPUT			0x1
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#define	HIGH					1
++#define	LOW						0
++
++#define	I2C_READ				1
++#define	I2C_WRITE				0
++//[*]----------------------------------------------------------------------------------------------[*]
++
++extern	int 	pmic_write		(unsigned char reg, unsigned char *wdata, unsigned char wsize);
++extern	int 	pmic_read		(unsigned char reg, unsigned char *rdata, unsigned char rsize);
++extern 	void 	pmic_init		(void);
++extern 	void 	emmc_pwr_reset	(void);
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#endif /*__PMIC_H__*/
++//[*]----------------------------------------------------------------------------------------------[*]
++//[*]----------------------------------------------------------------------------------------------[*]
++
+diff --git a/arch/arm/include/asm/mach-types.h b/arch/arm/include/asm/mach-types.h
+index a2a6216..f4f4844 100644
+--- a/arch/arm/include/asm/mach-types.h
++++ b/arch/arm/include/asm/mach-types.h
+@@ -1109,6 +1109,7 @@ extern unsigned int __machine_arch_type;
+ #define MACH_TYPE_SMDK5250             3825
+ #define MACH_TYPE_SMDK5410             4151
+ #define MACH_TYPE_OMAP5_SEVM           3777
++#define MACH_TYPE_ODROIDX              4289
+ #define MACH_TYPE_ODROIDXU			   4689
+ 
+ #ifdef CONFIG_ARCH_EBSA110
+diff --git a/board/samsung/smdk4x12/Makefile b/board/samsung/smdk4x12/Makefile
+index df0f460..9929e17 100644
+--- a/board/samsung/smdk4x12/Makefile
++++ b/board/samsung/smdk4x12/Makefile
+@@ -28,7 +28,11 @@ SOBJS	:= mem_init_smdk4x12.o
+ SOBJS	+= clock_init_smdk4x12.o
+ SOBJS	+= lowlevel_init.o
+ COBJS	+= smc.o
++ifdef CONFIG_BOARD_HARDKERNEL
++COBJS	+= pmic_hkdk4212.o
++else
+ COBJS	+= pmic.o
++endif
+ ifndef CONFIG_SPL_BUILD
+ COBJS	+= smdk4x12.o
+ endif
+diff --git a/board/samsung/smdk4x12/pmic_hkdk4212.c b/board/samsung/smdk4x12/pmic_hkdk4212.c
+new file mode 100644
+index 0000000..eb4b7d9
+--- /dev/null
++++ b/board/samsung/smdk4x12/pmic_hkdk4212.c
+@@ -0,0 +1,286 @@
++/*
++ * (C) Copyright 2011 Samsung Electronics Co. Ltd
++ *
++ * See file CREDITS for list of people who contributed to this
++ * project.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++
++//[*]----------------------------------------------------------------------------------------------[*]
++#include <common.h>
++#include <asm/arch/pmic_hkdk4212.h>
++
++//[*]----------------------------------------------------------------------------------------------[*]
++//	static function prototype
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_sda_port_control	(unsigned char inout);
++static	void			gpio_i2c_clk_port_control	(unsigned char inout);
++
++static	unsigned char	gpio_i2c_get_sda			(void);
++static	void			gpio_i2c_set_sda			(unsigned char hi_lo);
++static	void			gpio_i2c_set_clk			(unsigned char hi_lo);
++
++static 	void			gpio_i2c_start				(void);
++static 	void			gpio_i2c_stop				(void);
++
++static 	void			gpio_i2c_send_ack			(void);
++static 	void			gpio_i2c_send_noack			(void);
++static 	unsigned char	gpio_i2c_chk_ack			(void);
++
++static 	void 			gpio_i2c_byte_write			(unsigned char wdata);
++static 	void			gpio_i2c_byte_read			(unsigned char *rdata);
++
++//[*]----------------------------------------------------------------------------------------------[*]
++void delay_func(unsigned int us)
++{
++	unsigned long i;
++
++	for(i = 0; i < us; i++)	{	i++;	i--;	}
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_sda_port_control	(unsigned char inout)
++{
++	GPIO_I2C_SDA_CON_PORT &=  (unsigned long)(~(GPIO_CON_PORT_MASK << (GPIO_SDA_PIN * GPIO_CON_PORT_OFFSET)));
++	GPIO_I2C_SDA_CON_PORT |=  (unsigned long)( (inout << (GPIO_SDA_PIN * GPIO_CON_PORT_OFFSET)));
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_clk_port_control	(unsigned char inout)
++{
++	GPIO_I2C_CLK_CON_PORT &=  (unsigned long)(~(GPIO_CON_PORT_MASK << (GPIO_CLK_PIN * GPIO_CON_PORT_OFFSET)));
++	GPIO_I2C_CLK_CON_PORT |=  (unsigned long)( (inout << (GPIO_CLK_PIN * GPIO_CON_PORT_OFFSET)));
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	unsigned char	gpio_i2c_get_sda		(void)
++{
++	return	GPIO_I2C_SDA_DAT_PORT & (HIGH << GPIO_SDA_PIN) ? 1 : 0;
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_set_sda		(unsigned char hi_lo)
++{
++	if(hi_lo)	{
++		gpio_i2c_sda_port_control(GPIO_CON_INPUT);
++		delay_func(PORT_CHANGE_DELAY_TIME);
++	}
++	else		{
++		GPIO_I2C_SDA_DAT_PORT &= ~(HIGH << GPIO_SDA_PIN);
++		gpio_i2c_sda_port_control(GPIO_CON_OUTPUT);
++		delay_func(PORT_CHANGE_DELAY_TIME);
++	}
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_set_clk		(unsigned char hi_lo)
++{
++	if(hi_lo)	{
++		gpio_i2c_clk_port_control(GPIO_CON_INPUT);
++		delay_func(PORT_CHANGE_DELAY_TIME);
++	}
++	else		{
++		GPIO_I2C_CLK_DAT_PORT &= ~(HIGH << GPIO_CLK_PIN);
++		gpio_i2c_clk_port_control(GPIO_CON_OUTPUT);
++		delay_func(PORT_CHANGE_DELAY_TIME);
++	}
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_start			(void)
++{
++	// Setup SDA, CLK output High
++	gpio_i2c_set_sda(HIGH);
++	gpio_i2c_set_clk(HIGH);
++
++	delay_func(DELAY_TIME);
++
++	// SDA low before CLK low
++	gpio_i2c_set_sda(LOW);	delay_func(DELAY_TIME);
++	gpio_i2c_set_clk(LOW);	delay_func(DELAY_TIME);
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_stop			(void)
++{
++	// Setup SDA, CLK output low
++	gpio_i2c_set_sda(LOW);
++	gpio_i2c_set_clk(LOW);
++
++	delay_func(DELAY_TIME);
++
++	// SDA high after CLK high
++	gpio_i2c_set_clk(HIGH);	delay_func(DELAY_TIME);
++	gpio_i2c_set_sda(HIGH);	delay_func(DELAY_TIME);
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_send_ack		(void)
++{
++	// SDA Low
++	gpio_i2c_set_sda(LOW);	delay_func(DELAY_TIME);
++	gpio_i2c_set_clk(HIGH);	delay_func(DELAY_TIME);
++	gpio_i2c_set_clk(LOW);	delay_func(DELAY_TIME);
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void			gpio_i2c_send_noack		(void)
++{
++	// SDA High
++	gpio_i2c_set_sda(HIGH);	delay_func(DELAY_TIME);
++	gpio_i2c_set_clk(HIGH);	delay_func(DELAY_TIME);
++	gpio_i2c_set_clk(LOW);	delay_func(DELAY_TIME);
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	unsigned char	gpio_i2c_chk_ack		(void)
++{
++	unsigned char	count = 0, ret = 0;
++
++	gpio_i2c_set_sda(LOW);		delay_func(DELAY_TIME);
++	gpio_i2c_set_clk(HIGH);		delay_func(DELAY_TIME);
++
++	gpio_i2c_sda_port_control(GPIO_CON_INPUT);
++	delay_func(PORT_CHANGE_DELAY_TIME);
++
++	while(gpio_i2c_get_sda())	{
++		if(count++ > 100)	{	ret = 1;	break;	}
++		else					delay_func(DELAY_TIME);
++	}
++
++	gpio_i2c_set_clk(LOW);		delay_func(DELAY_TIME);
++
++	#if defined(DEBUG_GPIO_I2C)
++		if(ret)		DEBUG_MSG(("%s (%d): no ack!!\n",__FUNCTION__, ret));
++		else		DEBUG_MSG(("%s (%d): ack !! \n" ,__FUNCTION__, ret));
++	#endif
++
++	return	ret;
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void 		gpio_i2c_byte_write		(unsigned char wdata)
++{
++	unsigned char	cnt, mask;
++
++	for(cnt = 0, mask = 0x80; cnt < 8; cnt++, mask >>= 1)	{
++		if(wdata & mask)		gpio_i2c_set_sda(HIGH);
++		else					gpio_i2c_set_sda(LOW);
++
++		gpio_i2c_set_clk(HIGH);		delay_func(DELAY_TIME);
++		gpio_i2c_set_clk(LOW);		delay_func(DELAY_TIME);
++	}
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++static	void		gpio_i2c_byte_read		(unsigned char *rdata)
++{
++	unsigned char	cnt, mask;
++
++	gpio_i2c_sda_port_control(GPIO_CON_INPUT);
++	delay_func(PORT_CHANGE_DELAY_TIME);
++
++	for(cnt = 0, mask = 0x80, *rdata = 0; cnt < 8; cnt++, mask >>= 1)	{
++		gpio_i2c_set_clk(HIGH);		delay_func(DELAY_TIME);
++
++		if(gpio_i2c_get_sda())		*rdata |= mask;
++
++		gpio_i2c_set_clk(LOW);		delay_func(DELAY_TIME);
++
++	}
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++int 				pmic_write		(unsigned char reg, unsigned char *wdata, unsigned char wsize)
++{
++	unsigned char cnt, ack;
++
++	// start
++	gpio_i2c_start();
++
++	gpio_i2c_byte_write(MAX77687_ADDR + I2C_WRITE);	// i2c address
++
++	if((ack = gpio_i2c_chk_ack()))		goto	write_stop;
++
++	gpio_i2c_byte_write(reg);	// register
++
++	if((ack = gpio_i2c_chk_ack()))		goto	write_stop;
++
++	if(wsize)	{
++		for(cnt = 0; cnt < wsize; cnt++)	{
++			gpio_i2c_byte_write(wdata[cnt]);
++
++			if((ack = gpio_i2c_chk_ack()))	goto	write_stop;
++		}
++	}
++
++write_stop:
++
++	if(wsize)	gpio_i2c_stop();
++
++	return	ack;
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++int 				pmic_read		(unsigned char reg, unsigned char *rdata, unsigned char rsize)
++{
++	unsigned char ack, cnt;
++
++	// register pointer write
++	if(pmic_write(reg, NULL, 0))		goto	read_stop;
++
++	// restart
++	gpio_i2c_start();
++
++	gpio_i2c_byte_write(MAX77687_ADDR + I2C_READ);	// i2c address
++
++	if((ack = gpio_i2c_chk_ack()))		goto	read_stop;
++
++	for(cnt=0; cnt < rsize; cnt++)	{
++
++		gpio_i2c_byte_read(&rdata[cnt]);
++
++		if(cnt == rsize -1)		gpio_i2c_send_noack();
++		else					gpio_i2c_send_ack();
++	}
++
++read_stop:
++	gpio_i2c_stop();
++
++	return	ack;
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++//[*]----------------------------------------------------------------------------------------------[*]
++void pmic_init(void)
++{
++	unsigned char	rwdata;
++	gpio_i2c_set_sda(HIGH);		gpio_i2c_set_clk(HIGH);
++
++	rwdata = 0x08;		// reset delay changed : 7sec to 3sec
++	pmic_write(0x0A, &rwdata, 1);
++
++	rwdata = 0x14;		// 1.8V Enable
++	pmic_write(0x53, &rwdata, 1);	// EMMC
++}
++
++//[*]----------------------------------------------------------------------------------------------[*]
++//[*]----------------------------------------------------------------------------------------------[*]
++void emmc_pwr_reset(void)
++{
++	unsigned char	rwdata;
++	gpio_i2c_set_sda(HIGH);		gpio_i2c_set_clk(HIGH);
++
++	rwdata = 0x14;		// 1.8V Enable
++	pmic_write(0x53, &rwdata, 1);	// EMMC
++
++	rwdata = 0x00;		// 1.8V Enable
++//	pmic_write(0x34, &rwdata, 1);	// BUCK7 3.0V
++	pmic_write(0x36, &rwdata, 1);	// BUCK8 3.0V
++}
++//[*]----------------------------------------------------------------------------------------------[*]
++//[*]----------------------------------------------------------------------------------------------[*]
+diff --git a/board/samsung/smdk4x12/smc.c b/board/samsung/smdk4x12/smc.c
+index fe3c1ed..fb7f5fa 100644
+--- a/board/samsung/smdk4x12/smc.c
++++ b/board/samsung/smdk4x12/smc.c
+@@ -22,6 +22,9 @@ static inline u32 exynos_smc(u32 cmd, u32 arg1, u32 arg2, u32 arg3)
+ 	register u32 reg3 __asm__("r3") = arg3;
+ 
+ 	__asm__ volatile (
++#if __GNUC__ >= 4 && __GNUC_MINOR__ >= 6
++		".arch_extension sec\n"
++#endif
+ 		"smc	0\n"
+ 		: "+r"(reg0), "+r"(reg1), "+r"(reg2), "+r"(reg3)
+ 
+@@ -36,6 +39,9 @@ static inline u32 exynos_smc_read(u32 cmd)
+ 	register u32 reg1 __asm__("r1") = 0;
+ 
+ 	__asm__ volatile (
++#if __GNUC__ >= 4 && __GNUC_MINOR__ >= 6
++		".arch_extension sec\n"
++#endif
+ 		"smc	0\n"
+ 		: "+r"(reg0), "+r"(reg1)
+ 
+diff --git a/board/samsung/smdk4x12/smdk4x12.c b/board/samsung/smdk4x12/smdk4x12.c
+index 3c31237..015acb3 100644
+--- a/board/samsung/smdk4x12/smdk4x12.c
++++ b/board/samsung/smdk4x12/smdk4x12.c
+@@ -30,11 +30,15 @@
+ #include <asm/arch/mmc.h>
+ #include <asm/arch/sromc.h>
+ #include <asm/arch/clk.h>
++#ifdef CONFIG_BOARD_HARDKERNEL_FAN
++#include <asm/arch/pwm.h>
++#endif
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ struct exynos4_gpio_part1 *gpio1;
+ struct exynos4_gpio_part2 *gpio2;
+ 
++#ifdef CONFIG_SMC911X
+ static void smc9115_pre_init(void)
+ {
+ 	u32 smc_bw_conf, smc_bc_conf;
+@@ -52,6 +56,30 @@ static void smc9115_pre_init(void)
+ 	/* Select and configure the SROMC bank */
+ 	s5p_config_sromc(CONFIG_ENV_SROM_BANK, smc_bw_conf, smc_bc_conf);
+ }
++#endif
++
++#ifdef CONFIG_BOARD_HARDKERNEL_FAN
++static void hmdk4412_fan_init(void)
++{
++	u8 fan_duty = 255;
++	u8 fan_enable = getenv_yesno("odroid_fan_enable");
++	int fan_duty_ns;
++
++	if (fan_enable) {
++		char *fan_duty_str = getenv("odroid_fan_duty");
++		if (fan_duty_str != NULL) {
++			fan_duty = simple_strtoul(fan_duty_str, NULL, 10);
++		}
++		fan_duty_ns = fan_duty * 20972 / 255;
++
++		pwm_init(0, MUX_DIV_8, 1);
++		pwm_disable(0);
++		pwm_config(0, fan_duty_ns, 20972);
++		pwm_enable(0);
++		s5p_gpio_cfg_pin(&gpio1->d0, 0, GPIO_FUNC(2));
++	}
++}
++#endif
+ 
+ int board_init(void)
+ {
+@@ -60,12 +88,26 @@ int board_init(void)
+ 	u8 read_vol_int = 0x0;
+ 	u8 read_vol_g3d = 0x0;
+ 	u8 read_vol_mif = 0x0;
++	u8 read_pmic_id = 0x0;
++	unsigned int vol_conv;
+ 
+ 	int OmPin = readl(EXYNOS4_POWER_BASE + INFORM3_OFFSET);
+ 
++	char bl1_version[9] = {0};
++
+ 	gpio1 = (struct exynos4_gpio_part1 *) EXYNOS4_GPIO_PART1_BASE;
+ 	gpio2 = (struct exynos4_gpio_part2 *) EXYNOS4_GPIO_PART2_BASE;
+ 
++	/* display BL1 version */
++#ifdef CONFIG_TRUSTZONE
++	printf("\nTrustZone Enabled BSP");
++	strncpy(&bl1_version[0], (char *)(CONFIG_PHY_IRAM_NS_BASE + 0x810), 8);
++#else
++	strncpy(&bl1_version[0], (char *)0x020233c8, 8);
++#endif
++	printf("\nBL1 version: %s\n", &bl1_version[0]);
++
++#if !defined(CONFIG_BOARD_HARDKERNEL)
+ 	IIC0_ERead(0xcc, 0, &read_id);
+ 	if (read_id == 0x77) {
+ 		IIC0_ERead(0xcc, 0x19, &read_vol_arm);
+@@ -88,8 +130,43 @@ int board_init(void)
+ 	printf("vol_int: %X\n", read_vol_int);
+ 	printf("vol_g3d: %X\n", read_vol_g3d);
+ 	printf("vol_mif: %X\n", read_vol_mif);
++#else
++	if(pmic_read(0x00, &read_pmic_id, 1)) printf("pmic read error!\n");
++	else
++		printf("PMIC VER : %X, CHIP REV : %X\n", (read_pmic_id & 0x78) >> 3, (read_pmic_id & 0x07));
++
++	if(pmic_read(0x11, &read_vol_mif, 1)) printf("pmic read error!\n");
++	else
++	{
++		vol_conv = 750000 + (read_vol_mif >> 3) * 50000;
++		printf("VDD MIF : %d.%05dV\n", vol_conv / 1000000, vol_conv % 1000000);
++	}
+ 
++	if(pmic_read(0x14, &read_vol_arm, 1)) printf("pmic read error!\n");
++	else
++	{
++		vol_conv = 600000 + read_vol_arm * 12500;
++		printf("VDD ARM : %d.%05dV\n", vol_conv / 1000000, vol_conv % 1000000);
++	}
++
++	if(pmic_read(0x1E, &read_vol_int, 1)) printf("pmic read error!\n");
++	else
++	{
++		vol_conv = 600000 + read_vol_int * 12500;
++		printf("VDD INT : %d.%05dV\n", vol_conv / 1000000, vol_conv % 1000000);
++	}
++
++	if(pmic_read(0x28, &read_vol_g3d, 1)) printf("pmic read error!\n");
++	else
++	{
++		vol_conv = 600000 + read_vol_g3d * 12500;
++		printf("VDD G3D : %d.%05dV\n", vol_conv / 1000000, vol_conv % 1000000);
++	}
++#endif
++
++#ifdef CONFIG_SMC911X
+ 	smc9115_pre_init();
++#endif
+ 
+ 	gd->bd->bi_boot_params = (PHYS_SDRAM_1 + 0x100UL);
+ 
+@@ -168,6 +245,13 @@ int board_eth_init(bd_t *bis)
+ #ifdef CONFIG_SMC911X
+ 	rc = smc911x_initialize(0, CONFIG_SMC911X_BASE);
+ #endif
++
++#ifdef CONFIG_USB_ETHER
++	setenv("stdin", "serial");
++	setenv("stdout", "serial");
++	setenv("stderr", "serial");
++	rc = usb_eth_initialize(bis);
++#endif
+ 	return rc;
+ }
+ 
+@@ -297,6 +381,10 @@ int board_late_init(void)
+ 	int second_boot_info = readl(CONFIG_SECONDARY_BOOT_INFORM_BASE);
+ 	int err;
+ 
++#ifdef CONFIG_BOARD_HARDKERNEL_FAN
++	hmdk4412_fan_init();
++#endif
++
+ 	err = exynos_pinmux_config(PERIPH_ID_INPUT_X0_0, PINMUX_FLAG_NONE);
+ 	if (err) {
+ 		debug("GPX0_0 INPUT not configured\n");
+diff --git a/common/cmd_fastboot.c b/common/cmd_fastboot.c
+index 15dbffb..c04b358 100644
+--- a/common/cmd_fastboot.c
++++ b/common/cmd_fastboot.c
+@@ -752,7 +752,7 @@ static int rx_handler (const unsigned char *buffer, unsigned int buffer_size)
+ 	/* Use 65 instead of 64
+ 	   null gets dropped
+ 	   strcpy's need the extra byte */
+-	char response[65];
++	ALLOC_CACHE_ALIGN_BUFFER(char, response, 65);
+ 
+ 	if (download_size)
+ 	{
+@@ -1782,7 +1782,9 @@ int do_fastboot (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
+ 
+ 		    printf("\n\n*** fastboot poweroff cmd : system power off! ***\n\n");
+ 
++#if defined(CONFIG_LED_CONTROL)
+             LED_BLUE(OFF);   LED_GREEN(OFF);    LED_RED(OFF);
++#endif
+ 
+         	while(1)    POWER_PS_HOLD = 0x5200;
+ 		}
+diff --git a/common/cmd_fat.c b/common/cmd_fat.c
+index f4b070b..62eaadf 100644
+--- a/common/cmd_fat.c
++++ b/common/cmd_fat.c
+@@ -329,6 +329,7 @@ int do_fat_cfgload(cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
+             if(wpos)    {
+                 if(wpos < sizeof(cmd)) {
+                     if(first)   {
++#if CONFIG_MACH_TYPE == MACH_TYPE_ODROIDXU
+                         if(!strncmp(cmd, "ODROIDXU-UBOOT-CONFIG", sizeof("ODROIDXU-UBOOT-CONFIG"))) {
+                             printf("Find boot.ini file from FAT/Ext4 Area!!\n");     first = 0;
+                         }
+@@ -336,6 +337,19 @@ int do_fat_cfgload(cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
+                             printf("Find boot.ini file. But This file is not odroidxu config file!\n");
+                             return  0;
+                         }
++#elif CONFIG_MACH_TYPE == MACH_TYPE_ODROIDX
++                        if(!strncmp(cmd, "ODROID4412-UBOOT-CONFIG", sizeof("ODROID4412-UBOOT-CONFIG"))) {
++                            printf("Find boot.ini file from FAT/Ext4 Area!!\n");     first = 0;
++                        }
++                        else    {
++                            printf("Find boot.ini file. But This file is not odroid4412 config file!\n");
++                            return  0;
++                        }
++#else
++			first = 0;
++			printf("boot.ini command = %s\n", cmd);
++			run_command(cmd, 0);
++#endif
+                     }
+                     else    {
+                         printf("boot.ini command = %s\n", cmd);
+diff --git a/common/env_common.c b/common/env_common.c
+index 0502bcb..b9de906 100644
+--- a/common/env_common.c
++++ b/common/env_common.c
+@@ -145,6 +145,14 @@ const uchar default_environment[] = {
+ 	"soc="		CONFIG_SYS_SOC			"\0"
+ #endif
+ #endif
++#ifdef CONFIG_EHCI_EXYNOS
++	"usb_invert_clken=n\0"
++#endif
++#ifdef CONFIG_BOARD_HARDKERNEL_FAN
++	"odroid_fan_enable="	MK_STR(CONFIG_BOARD_HARDKERNEL_FAN_ENABLE)	"\0"
++	"odroid_fan_duty="	MK_STR(CONFIG_BOARD_HARDKERNEL_FAN_DUTY)	"\0"
++#endif
++
+ #ifdef	CONFIG_EXTRA_ENV_SETTINGS
+ 	CONFIG_EXTRA_ENV_SETTINGS
+ #endif
+diff --git a/drivers/usb/gadget/Makefile b/drivers/usb/gadget/Makefile
+index dfa4e69..fb16d28 100644
+--- a/drivers/usb/gadget/Makefile
++++ b/drivers/usb/gadget/Makefile
+@@ -25,13 +25,17 @@ include $(TOPDIR)/config.mk
+ 
+ LIB	:= $(obj)libusb_gadget.o
+ 
++COBJS-$(CONFIG_EXYNOS_USBD3) += usbd3-ss.o
++COBJS-$(CONFIG_S3C_USBD) += usbd-otg-hs.o
++
+ # new USB gadget layer dependencies
+ ifdef CONFIG_USB_GADGET
+ COBJS-y += epautoconf.o config.o usbstring.o
+ COBJS-$(CONFIG_USB_GADGET_S3C_UDC_OTG) += s3c_udc_otg.o
+ endif
+ ifdef CONFIG_USB_ETHER
+-COBJS-y += ether.o epautoconf.o config.o usbstring.o
++#COBJS-y += epautoconf.o config.o usbstring.o
++COBJS-y += ether.o
+ COBJS-$(CONFIG_USB_ETH_RNDIS) += rndis.o
+ COBJS-$(CONFIG_MV_UDC)	+= mv_udc.o
+ else
+@@ -44,9 +48,6 @@ COBJS-$(CONFIG_OMAP1510) += omap1510_udc.o
+ COBJS-$(CONFIG_OMAP1610) += omap1510_udc.o
+ COBJS-$(CONFIG_MPC885_FAMILY) += mpc8xx_udc.o
+ COBJS-$(CONFIG_CPU_PXA27X) += pxa27x_udc.o
+-else
+-COBJS-$(CONFIG_EXYNOS_USBD3) += usbd3-ss.o
+-COBJS-$(CONFIG_S3C_USBD) += usbd-otg-hs.o
+ endif
+ endif
+ 
+diff --git a/drivers/usb/gadget/config.c b/drivers/usb/gadget/config.c
+index f88d0c1..f9163a8 100644
+--- a/drivers/usb/gadget/config.c
++++ b/drivers/usb/gadget/config.c
+@@ -27,7 +27,6 @@
+ #include <linux/string.h>
+ 
+ #include <linux/usb/ch9.h>
+-#include <usbdescriptors.h>
+ #include <linux/usb/gadget.h>
+ 
+ 
+diff --git a/drivers/usb/gadget/epautoconf.c b/drivers/usb/gadget/epautoconf.c
+index b656c8b..5b8776e 100644
+--- a/drivers/usb/gadget/epautoconf.c
++++ b/drivers/usb/gadget/epautoconf.c
+@@ -23,7 +23,6 @@
+ 
+ #include <common.h>
+ #include <linux/usb/ch9.h>
+-#include <usbdescriptors.h>
+ #include <asm/errno.h>
+ #include <linux/usb/gadget.h>
+ #include <asm/unaligned.h>
+diff --git a/drivers/usb/gadget/ether.c b/drivers/usb/gadget/ether.c
+index d975fb6..6f7e4cd 100644
+--- a/drivers/usb/gadget/ether.c
++++ b/drivers/usb/gadget/ether.c
+@@ -24,7 +24,6 @@
+ #include <asm/errno.h>
+ #include <linux/netdevice.h>
+ #include <linux/usb/ch9.h>
+-#include <usbdescriptors.h>
+ #include <linux/usb/cdc.h>
+ #include <linux/usb/gadget.h>
+ #include <net.h>
+diff --git a/drivers/usb/gadget/s3c_udc_otg.c b/drivers/usb/gadget/s3c_udc_otg.c
+index 3fdfdf7..f9d24e3 100644
+--- a/drivers/usb/gadget/s3c_udc_otg.c
++++ b/drivers/usb/gadget/s3c_udc_otg.c
+@@ -37,7 +37,6 @@
+ #include <malloc.h>
+ 
+ #include <linux/usb/ch9.h>
+-#include <usbdescriptors.h>
+ #include <linux/usb/gadget.h>
+ 
+ #include <asm/byteorder.h>
+diff --git a/drivers/usb/gadget/usbstring.c b/drivers/usb/gadget/usbstring.c
+index 4dbe060..95555cf 100644
+--- a/drivers/usb/gadget/usbstring.c
++++ b/drivers/usb/gadget/usbstring.c
+@@ -13,7 +13,6 @@
+ #include <common.h>
+ #include <asm/errno.h>
+ #include <linux/usb/ch9.h>
+-#include <usbdescriptors.h>
+ #include <linux/usb/gadget.h>
+ 
+ #include <asm/unaligned.h>
+diff --git a/drivers/usb/host/ehci-exynos.c b/drivers/usb/host/ehci-exynos.c
+index 1c1a276..ad97c74 100644
+--- a/drivers/usb/host/ehci-exynos.c
++++ b/drivers/usb/host/ehci-exynos.c
+@@ -48,6 +48,22 @@
+ /* Declare global data pointer */
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++#if defined(CONFIG_BOARD_HARDKERNEL) && defined(CONFIG_EXYNOS4412)
++void max77686_update_reg(u8 reg, u8 val, u8 mask) {
++	u8 old_val, new_val;
++
++	val = val & 0xFF;
++	mask = mask & 0xFF;
++	reg = reg & 0xFF;
++	if (pmic_read(reg, &old_val, 1)) printf("pmic_read error\n");
++	if (old_val >= 0) {
++		old_val = old_val & 0xff;
++		new_val = (val & mask) | (old_val & (~mask));
++		pmic_write(reg, &new_val, 1);
++	}
++}
++#endif
++
+ /**
+  * Contains pointers to register base addresses
+  * for the usb controller.
+@@ -320,6 +336,15 @@ static void reset_usb_phy(struct exynos_usb_phy *usb)
+ 
+ void usb_eth_init() {
+ 	/* Turn off and turn on the power to LAN9730 - LDO 25 */
++#if defined(CONFIG_BOARD_HARDKERNEL) && defined(CONFIG_EXYNOS4412)
++	mdelay(10);
++	max77686_update_reg(0x37, 0x0, 0x3F); /* 0V */
++	mdelay(10);
++	max77686_update_reg(0x37, 0x33, 0x3F); /* 3.3V */
++	mdelay(10);
++	max77686_update_reg(0x36, 0x3, 0x3); /*ON val=3, mask=4*/
++	mdelay(10);
++#else
+ 	unsigned char rdata;
+ 
+ 	IIC0_ERead (0x09, 0x78, &rdata);
+@@ -328,10 +353,12 @@ void usb_eth_init() {
+ 
+ 	IIC0_ERead(0x09, 0x78, &rdata);
+ 	IIC0_EWrite(0x09, 0x78, rdata | 0xC0);
++#endif
+ }
+ 
+ void usb_hub_init () {
+         u32     a, val, i2c_dat;
++	int clk_inv;
+ 
+ #define	GPX0BASE ((void *) (0x13400C00))
+ #define GPX1BASE ((void *) (0x13400C20))
+@@ -341,9 +368,13 @@ void usb_hub_init () {
+         s_gpio_set_value(GPX1BASE, 4, 0);
+         mdelay(10);
+ 
++        clk_inv = getenv_yesno("usb_invert_clken");
++        printf("usb: usb_refclk_enable is active low: %s\n", clk_inv ? "NO" : "YES");
++        printf("ProTIP: If usb doesn't work - try playing with 'usb_invert_clken' environment\n");
++
+         /* RefCLK 24MHz INTN pin low */
+         s_gpio_direction_output(GPX0BASE, 7, 0);
+-        s_gpio_set_value(GPX0BASE, 7, 0);
++        s_gpio_set_value(GPX0BASE, 7, clk_inv);
+         mdelay(10);
+ 
+ 	/* HUB CONNECT low */
+diff --git a/include/configs/smdk4412.h b/include/configs/smdk4412.h
+index cb9625d..8978f75 100644
+--- a/include/configs/smdk4412.h
++++ b/include/configs/smdk4412.h
+@@ -28,20 +28,30 @@
+ /* High Level Configuration Options */
+ #define CONFIG_SAMSUNG			1	/* in a SAMSUNG core */
+ #define CONFIG_S5P			1	/* S5P Family */
+-#define CONFIG_ARCH_EXYNOS		1       /* which is in a Exynos Family */
++#define CONFIG_ARCH_EXYNOS		1	/* which is in a Exynos Family */
+ #define CONFIG_EXYNOS4X12		1	/* which is a EXYNOS4x12 SoC */
+ #define CONFIG_EXYNOS4412		1	/* which is a EXYNOS4412 SoC */
+-#define CONFIG_SMDKV310			1	/* working with SMDKV310*/
+-#undef CONFIG_EXYNOS4412_EVT2
++#define CONFIG_S5PC210			1	/* which is in a S5PC210 */
++#define CONFIG_S5PC220			1	/* which is in a S5PC220 */
++#define CONFIG_SMDKC210			1
++#define CONFIG_SMDKC220			1
++#define CONFIG_EXYNOS4212		1
++#define CONFIG_EXYNOS4412_EVT2		1
++
++#define CONFIG_BOARD_HARDKERNEL
++
++#define CONFIG_BOARD_HARDKERNEL_FAN
++#if defined(CONFIG_BOARD_HARDKERNEL_FAN)
++#define CONFIG_BOARD_HARDKERNEL_FAN_ENABLE	y
++#define CONFIG_BOARD_HARDKERNEL_FAN_DUTY	255
++#endif
+ 
+ #define CONFIG_BL_MONITOR
+ 
+ #define CONFIG_TRUSTZONE
+ #define CONFIG_TRUSTZONE_RESERVED_DRAM	0x100000
+-#ifdef CONFIG_TRUSTZONE
+-#define CONFIG_PHY_IRAM_BASE            (0x02020000)
+-#define CONFIG_PHY_IRAM_NS_BASE         (CONFIG_PHY_IRAM_BASE + 0x2F000)
+-#endif
++#define CONFIG_PHY_IRAM_BASE		(0x02020000)
++#define CONFIG_PHY_IRAM_NS_BASE		(CONFIG_PHY_IRAM_BASE + 0x2F000)
+ 
+ /* Configuration of secure boot */
+ #undef CONFIG_UBOOT_SECURE_BOOT
+@@ -52,11 +62,11 @@
+ #define CONFIG_UBOOT_SECURE_BOOT
+ #define CONFIG_TZSW_SECURE_BOOT
+ #define CONFIG_SECURE_ROOTFS
+-#define CONFIG_SECURE_CONTEXT_BASE      0x40003800
+-#define CONFIG_SECURE_KERNEL_BASE       0x40008000
+-#define CONFIG_SECURE_KERNEL_SIZE       0x400000
+-#define CONFIG_SECURE_ROOTFS_BASE       0x41000000
+-#define CONFIG_SECURE_ROOTFS_SIZE       0x100000
++#define CONFIG_SECURE_CONTEXT_BASE	0x40003800
++#define CONFIG_SECURE_KERNEL_BASE	0x40008000
++#define CONFIG_SECURE_KERNEL_SIZE	0x400000
++#define CONFIG_SECURE_ROOTFS_BASE	0x41000000
++#define CONFIG_SECURE_ROOTFS_SIZE	0x100000
+ #endif
+ 
+ /* APLL : 800MHz */
+@@ -75,8 +85,9 @@
+ #endif
+ 
+ /* Power Management is enabled */
++#define CONFIG_PM
+ #define CONFIG_PM_VDD_ARM	1.2
+-#define CONFIG_PM_VDD_INT	1.1
++#define CONFIG_PM_VDD_INT	1.0
+ #define CONFIG_PM_VDD_G3D	1.1
+ #define CONFIG_PM_VDD_MIF	1.1
+ #define CONFIG_PM_VDD_LDO14	1.8
+@@ -88,7 +99,11 @@
+ #define CONFIG_DISPLAY_BOARDINFO
+ 
+ /* Mach Type */
++#if defined(CONFIG_BOARD_HARDKERNEL)
++#define CONFIG_MACH_TYPE		MACH_TYPE_ODROIDX
++#else
+ #define CONFIG_MACH_TYPE		MACH_TYPE_SMDK4412
++#endif
+ 
+ /* Keep L2 Cache Disabled */
+ #define CONFIG_L2_OFF			1
+@@ -158,10 +173,13 @@
+ #define CONFIG_MMC_EARLY_INIT
+ #define MMC_MAX_CHANNEL		5
+ 
++#define USE_MMC2
+ #define USE_MMC4
+ 
+ #define PHASE_DEVIDER			4
+ 
++#define SDR_CH2			0x00010001
++#define DDR_CH2			0x00010001
+ #define SDR_CH4			0x00010001
+ #define DDR_CH4			0x00010001
+ #endif
+@@ -175,33 +193,72 @@
+ /* Command definition*/
+ #include <config_cmd_default.h>
+ 
++#define CONFIG_CMD_CACHE
++#define CONFIG_CMD_REGINFO
++
+ #define CONFIG_CMD_PING
+ #define CONFIG_CMD_ELF
+ #define CONFIG_CMD_DHCP
+ #define CONFIG_CMD_MMC
+-#define CONFIG_CMD_EXT2
++#define CONFIG_CMD_EXT4
+ #define CONFIG_CMD_NET
++#define CONFIG_CMD_NFS
+ #define CONFIG_CMD_FAT
+ #define CONFIG_CMD_BOOTZ
++#define CONFIG_CMD_MTDPARTS
++#define CONFIG_MTD_DEVICE
+ 
+ #define CONFIG_BOOTDELAY		3
+ #define CONFIG_ZERO_BOOTDELAY_CHECK
+ 
+ /* USB */
+-#undef CONFIG_CMD_USB
++#define CONFIG_CMD_USB
+ /* EHCI : 2.0 Host */
+-#undef CONFIG_USB_EHCI
+-#undef CONFIG_USB_EHCI_EXYNOS
+-#undef CONFIG_USB_STORAGE
++#define CONFIG_USB_EHCI
++#define CONFIG_USB_EHCI_EXYNOS
++#define CONFIG_USB_STORAGE
++#define CONFIG_SYS_USB_EHCI_MAX_ROOT_PORTS	10
++
++#define HAVE_BLOCK_DEVICE
+ 
+ /* OHCI : Host 1.0 */
+-#define CONFIG_USB_OHCI
++#undef CONFIG_USB_OHCI
+ #undef CONFIG_USB_CPUMODE
+ 
+ #define CONFIG_S3C_USBD
+ 
+-#define USBD_DOWN_ADDR                  0x40000000
+-#define EXYNOS_SYSREG_BASE              EXYNOS4_SYSREG_BASE
++#define USBD_DOWN_ADDR			0x40000000
++#define EXYNOS_SYSREG_BASE		EXYNOS4_SYSREG_BASE
++
++/* Gadget Support */
++#define CONFIG_USB_GADGET
++#define CONFIG_USB_GADGET_S3C_UDC_OTG
++#define CONFIG_USB_GADGET_DUALSPEED
++#define CONFIG_USB_GADGET_VBUS_DRAW 2
++#define CONFIG_USB_CABLE_CHECK
++
++/* USB gadget mass storage */
++#define CONFIG_USBDOWNLOAD_GADGET
++#define CONFIG_CMD_USB_MASS_STORAGE
++#define CONFIG_USB_GADGET_MASS_STORAGE
++
++/* USB Samsung's IDs */
++#define CONFIG_G_DNL_VENDOR_NUM 0x04E8
++#define CONFIG_G_DNL_PRODUCT_NUM 0x6601
++#define CONFIG_G_DNL_MANUFACTURER "Samsung"
++
++/* USB OTG Ethernet */
++#define CONFIG_USB_ETHER
++#define CONFIG_USB_ETH_CDC
++
++/* USB OTG MAC Addresses for HOST and DEVICE */
++#define CONFIG_USBNET_DEV_ADDR		"DE:AD:BE:EF:00:02"
++#define CONFIG_USBNET_DEV_IP		"10.10.10.11"
++#define CONFIG_USBNET_DEV_NETMASK	"255.255.255.0"
++
++#define CONFIG_USBNET_HOST_ADDR		"DE:AD:BE:EF:00:01"
++#define CONFIG_USBNET_HOST_IP		"10.10.10.10"
++#define CONFIG_USBNET_HOST_NETMASK	"255.255.255.0"
+ 
+ /*
+  *  Fast Boot
+@@ -209,19 +266,42 @@
+ /* Fastboot variables */
+ #define CONFIG_FASTBOOT
+ 
+-#define CFG_FASTBOOT_TRANSFER_BUFFER            (0x48000000)
+-#define CFG_FASTBOOT_TRANSFER_BUFFER_SIZE       (0x10000000)   /* 256MB */
+-#define CFG_FASTBOOT_ADDR_KERNEL                (0x40008000)
+-#define CFG_FASTBOOT_ADDR_RAMDISK               (0x40800000)
+-#define CFG_FASTBOOT_PAGESIZE                   (2048)  // Page size of booting device
+-#define CFG_FASTBOOT_SDMMC_BLOCKSIZE            (512)   // Block size of sdmmc
++#define CFG_FASTBOOT_TRANSFER_BUFFER		(0x48000000)
++#define CFG_FASTBOOT_TRANSFER_BUFFER_SIZE	(0x10000000)   /* 256MB */
++#define CFG_FASTBOOT_ADDR_KERNEL		(0x40008000)
++#define CFG_FASTBOOT_ADDR_RAMDISK		(0x40800000)
++#define CFG_FASTBOOT_PAGESIZE			(2048)  // Page size of booting device
++#define CFG_FASTBOOT_SDMMC_BLOCKSIZE		(512)   // Block size of sdmmc
+ #define CFG_FASTBOOT_SDMMCBSP
+ 
++#if defined(CONFIG_BOARD_HARDKERNEL)
++#define ON		1
++#define OFF		0
++#define REBOOT_FASTBOOT	0xFAB0
++#define REBOOT_UPDATE	0xFADA
++#endif
++
+ /* MMC SPL */
+ #define CONFIG_SPL
+ #define COPY_BL2_FNPTR_ADDR	0x00002488
+ 
++#if defined(CONFIG_BOARD_HARDKERNEL)
++#define CONFIG_BOOTCOMMAND  \
++	"    cfgload;"				\
++	"    mmc rescan 0:1; mmc rescan 0:2;"	\
++	"    if run loadbootscript_1; "		\
++	"        then run bootscript; "		\
++	"    else "				\
++	"       if run loadbootscript_2;"	\
++	"           then run bootscript; "	\
++	"       else "				\
++	"           run default_bootcmd; "	\
++	"       fi ;"				\
++	"    fi ;"
++#define CONFIG_BOOTARGS		"fb_x_res=1280 fb_y_res=720 hdmi_phy_res=720 "
++#else
+ #define CONFIG_BOOTCOMMAND	"movi r k 0 40008000; movi r r 0 41000000 100000; bootz 40008000 41000000"
++#endif
+ 
+ #define CONFIG_RECOVERYCOMMAND	\
+ 		"emmc partition 0 10 0;"	\
+@@ -249,11 +329,15 @@
+ /* Miscellaneous configurable options */
+ #define CONFIG_SYS_LONGHELP		/* undef to save memory */
+ #define CONFIG_SYS_HUSH_PARSER		/* use "hush" command parser	*/
++#if defined(CONFIG_BOARD_HARDKERNEL)
++#define CONFIG_SYS_PROMPT		"Exynos4412 # "
++#else
+ #define CONFIG_SYS_PROMPT		"SMDK4412 # "
++#endif
+ #define CONFIG_SYS_CBSIZE		256	/* Console I/O Buffer Size*/
+ #define CONFIG_SYS_PBSIZE		384	/* Print Buffer Size */
+ #define CONFIG_SYS_MAXARGS		16	/* max number of command args */
+-#define CONFIG_DEFAULT_CONSOLE		"console=ttySAC2,115200n8\0"
++#define CONFIG_DEFAULT_CONSOLE		"console=ttySAC1,115200n8\0"
+ /* Boot Argument Buffer Size */
+ #define CONFIG_SYS_BARGSIZE		CONFIG_SYS_CBSIZE
+ /* memtest works on */
+@@ -263,9 +347,11 @@
+ 
+ #define CONFIG_SYS_HZ			1000
+ 
++#define CONFIG_SYS_CACHELINE_SIZE	32
++
+ /* Stack sizes */
+ #define CONFIG_STACKSIZE		(256 << 10)	/* 256KB */
+-#undef  USE_2G_DRAM
++#define USE_2G_DRAM			1
+ 
+ #ifdef  USE_2G_DRAM
+ #define CONFIG_NR_DRAM_BANKS	8
+@@ -283,8 +369,8 @@
+ #ifdef  USE_2G_DRAM
+ #define PHYS_SDRAM_4_SIZE	SDRAM_BANK_SIZE
+ #else
+-#define PHYS_SDRAM_4_SIZE	(SDRAM_BANK_SIZE                        \
+-                                        - CONFIG_TRUSTZONE_RESERVED_DRAM)
++#define PHYS_SDRAM_4_SIZE	(SDRAM_BANK_SIZE			\
++					- CONFIG_TRUSTZONE_RESERVED_DRAM)
+ #endif
+ #define PHYS_SDRAM_5		(CONFIG_SYS_SDRAM_BASE + (4 * SDRAM_BANK_SIZE))
+ #define PHYS_SDRAM_5_SIZE	SDRAM_BANK_SIZE
+@@ -293,12 +379,16 @@
+ #define PHYS_SDRAM_7		(CONFIG_SYS_SDRAM_BASE + (6 * SDRAM_BANK_SIZE))
+ #define PHYS_SDRAM_7_SIZE	SDRAM_BANK_SIZE
+ #define PHYS_SDRAM_8		(CONFIG_SYS_SDRAM_BASE + (7 * SDRAM_BANK_SIZE))
+-#define PHYS_SDRAM_8_SIZE	(SDRAM_BANK_SIZE                        \
+-                                        - CONFIG_TRUSTZONE_RESERVED_DRAM)
++#define PHYS_SDRAM_8_SIZE	(SDRAM_BANK_SIZE			\
++					- CONFIG_TRUSTZONE_RESERVED_DRAM)
+ /* FLASH and environment organization */
+ #define CONFIG_SYS_NO_FLASH		1
+ #undef	CONFIG_CMD_IMLS
++#if defined(CONFIG_BOARD_HARDKERNEL)
++#define CONFIG_IDENT_STRING		" for Exynos4412"
++#else
+ #define CONFIG_IDENT_STRING		" for SMDK4412"
++#endif
+ 
+ #ifdef CONFIG_USE_IRQ
+ #define CONFIG_STACKSIZE_IRQ		(4*1024)	/* IRQ stack */
+@@ -317,7 +407,8 @@
+ #define BL1_SIZE			(16 << 10) /*16 K reserved for BL1*/
+ #define CONFIG_ENV_OFFSET		(RESERVE_BLOCK_SIZE + BL1_SIZE)
+ #define CONFIG_DOS_PARTITION		1
+-#define CFG_PARTITION_START             0x4000000
++#define CONFIG_PARTITION_UUIDS		1
++#define CFG_PARTITION_START		0x4000000
+ 
+ #define CONFIG_SYS_INIT_SP_ADDR	(CONFIG_SYS_LOAD_ADDR - GENERATED_GBL_DATA_SIZE)
+ 
+@@ -327,16 +418,15 @@
+ #define BL2_SIZE_BLOC_COUNT	(COPY_BL2_SIZE/512)
+ 
+ /* Base address for secondary boot information */
+-#define CONFIG_SECONDARY_BOOT_INFORM_BASE       (CONFIG_SYS_TEXT_BASE - 0x8)
++#define CONFIG_SECONDARY_BOOT_INFORM_BASE	(CONFIG_SYS_TEXT_BASE - 0x8)
+ 
+ /* Ethernet Controllor Driver */
+ #ifdef CONFIG_CMD_NET
+-#define CONFIG_SMC911X
+-#define CONFIG_SMC911X_BASE		0x5000000
+-#define CONFIG_SMC911X_16_BIT
+-#define CONFIG_ENV_SROM_BANK		1
++#define CONFIG_USB_HOST_ETHER
++#define CONFIG_USB_ETHER_SMSC95XX
+ #endif /*CONFIG_CMD_NET*/
+ 
+ /* Enable devicetree support */
+ #define CONFIG_OF_LIBFDT
++#define CONFIG_SYS_BOOTMAPSZ	(8 << 20) /* Initial Memory map for Linux */
+ #endif	/* __CONFIG_H */
+diff --git a/include/usb/s3c_udc.h b/include/usb/s3c_udc.h
+index 6a8fd44..7114dae 100644
+--- a/include/usb/s3c_udc.h
++++ b/include/usb/s3c_udc.h
+@@ -24,7 +24,6 @@
+ 
+ #include <asm/errno.h>
+ #include <linux/usb/ch9.h>
+-#include <usbdescriptors.h>
+ #include <linux/usb/gadget.h>
+ #include <linux/list.h>
+ #include <usb/lin_gadget_compat.h>
