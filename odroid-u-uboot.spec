@@ -12,6 +12,10 @@ Source0:        https://github.com/hardkernel/u-boot/archive/%{commit}/u-boot-%{
 Source1:        boot.ini
 Source2:        grubby
 Patch0:         %{name}-2015.08.08-Add-support-for-Exynos4412-based-ODROIDs.patch
+Patch1:         %{name}-2015.08.08-gcc5.patch
+Patch2:         %{name}-2015.08.08-arm-asm-io-h-use-static-inline.patch
+Patch3:         %{name}-2015.08.08-leds-weak.patch
+Patch4:         %{name}-2015.08.08-show-boot-progress-weak.patch
 
 # We always need to use a cross compiler because we can't use hardfloat static
 # libraries. This means that we'll always produce an ARM package, even when
@@ -30,6 +34,10 @@ default boot.ini, and also configures grubby.
 %prep
 %setup -qn u-boot-%{commit}
 %patch0 -p1
+%patch1 -p1
+%patch2 -p1
+%patch3 -p1
+%patch4 -p1
 rm -f mkbl2
 dos2unix COPYING.txt
 chmod 644 COPYING.txt
